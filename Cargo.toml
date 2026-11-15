@@ -1,0 +1,26 @@
+[package]
+name = "heroic-launcher-game-saves"
+version = "0.1.0"
+edition = "2024"
+description = "Back up Heroic Launcher game saves to Git/GitHub"
+license = "MIT"
+readme = "README.md"
+keywords = ["heroic", "games", "save", "backup", "wine"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "heroic-save-backup"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+fs2 = "0.4"
+unicode-normalization = "0.1"
+filetime = "0.2"
+
+[profile.release]
+lto = true
+strip = true
+opt-level = "z"
+codegen-units = 1
