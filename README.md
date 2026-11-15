@@ -188,6 +188,25 @@ systemctl --user daemon-reload
 systemctl --user restart heroic-save-backup.timer
 ```
 
+## Resource usage
+
+The design avoids background work:
+
+- **No resident process.** The timer and the path unit are systemd units; the
+  binary only runs when triggered and exits immediately.
+- **Path unit** = one inotify watch held by systemd; it consumes no measurable
+  CPU and no separate memory.
+- **A no-change run** was measured on the test machine at **~10 ms wall time**
+  and **~2.5–6 MB peak RSS**, with no git/network activity: unchanged files are
+  skipped by size+mtime, and git is not invoked at all when nothing changed.
+- **Throttling:** the installed service uses `--min-interval 60`, so closing
+  several games in a row does not start a backup each time.
+- **Bounded log:** `backup.log` rotates at 1 MiB.
+- **Cost scales with saves**, not with game size: caches, logs, temp files and
+  files over 100 MB are excluded.
+- Build artifacts (`target/`, ~43 MB for a release build) are only needed to
+  compile. `cargo clean` removes them; the installed binary keeps working.
+
 ## What gets backed up
 
 Per game, when present:

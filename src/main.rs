@@ -80,6 +80,7 @@ struct Env {
     log_file: PathBuf,
     lock_file: PathBuf,
     machine: String,
+    min_interval: u64,
     dry_run: bool,
     no_push: bool,
     quiet: bool,
@@ -97,6 +98,10 @@ impl Env {
         let mut repo_arg = None;
         let mut heroic_arg = None;
         let mut machine_arg = None;
+        let mut min_interval: u64 = env::var("GAME_SAVES_MIN_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         let mut dry_run = false;
         let mut no_push = false;
         let mut quiet = false;
@@ -110,6 +115,9 @@ impl Env {
                 "--repo" => repo_arg = args.next().map(PathBuf::from),
                 "--heroic-dir" => heroic_arg = args.next().map(PathBuf::from),
                 "--machine" => machine_arg = args.next(),
+                "--min-interval" => {
+                    min_interval = args.next().and_then(|v| v.parse().ok()).unwrap_or(0)
+                }
                 "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
@@ -176,6 +184,7 @@ impl Env {
             secondary_roots,
             state_dir,
             machine,
+            min_interval,
         }
     }
 }
@@ -222,6 +231,7 @@ fn print_help() {
          \x20   --repo <PATH>        Git repository that stores the saves (default: ~/heroic-save-backup)\n\
          \x20   --heroic-dir <PATH>  Heroic config dir (auto-detected: Flatpak, native or Snap)\n\
          \x20   --machine <NAME>     machine folder inside the repo (default: hostname)\n\
+         \x20   --min-interval <S>   skip runs that happen less than S seconds after the last one\n\
          \x20   --dry-run            show what would be copied; no writes, commits or pushes\n\
          \x20   --no-push            commit locally but do not push to the remote\n\
          \x20   --quiet              do not show desktop notifications\n\
@@ -232,7 +242,8 @@ fn print_help() {
          \x20   GAME_SAVES_MACHINE   machine folder name (overridden by --machine)\n\
          \x20   HEROIC_DIR           Heroic config dir (overridden by --heroic-dir)\n\
          \x20   SECONDARY_ROOTS      colon-separated dirs with extra Wine prefixes (default: ~/Games)\n\
-         \x20   GAME_SAVES_STATE     state/log dir (default: ~/.local/state/heroic-save-backup)\n\n\
+         \x20   GAME_SAVES_STATE     state/log dir (default: ~/.local/state/heroic-save-backup)\n\
+         \x20   GAME_SAVES_MIN_INTERVAL  same as --min-interval\n\n\
          EXIT CODES: 0 ok, 1 setup/runtime error, 2 commit/push failed",
         env!("CARGO_PKG_VERSION")
     );
@@ -247,6 +258,13 @@ struct Log<'a> {
 
 impl<'a> Log<'a> {
     fn new(env: &'a Env) -> Self {
+        // Keep the log bounded: rotate once it grows past 1 MiB.
+        if fs::metadata(&env.log_file)
+            .map(|meta| meta.len() > 1024 * 1024)
+            .unwrap_or(false)
+        {
+            let _ = fs::rename(&env.log_file, env.log_file.with_extension("log.1"));
+        }
         let file = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -941,6 +959,25 @@ fn main() {
     }
 
     let mut log = Log::new(&env);
+
+    // Throttle hook-triggered runs: closing several games in a row should not
+    // start a backup each time. Manual runs default to no throttle.
+    let last_run_path = env.state_dir.join("last-run");
+    if env.min_interval > 0 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let last = fs::read_to_string(&last_run_path)
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        if last > 0 && now.saturating_sub(last) < env.min_interval {
+            log.info("A backup ran recently; skipping this one.");
+            return;
+        }
+    }
+
     log.info(&format!(
         "=== Starting save backup (machine: {}) ===",
         env.machine
@@ -1082,16 +1119,25 @@ fn main() {
         "# Generated automatically by heroic-save-backup\n# folder\tsource\tgame(s)\n{}\n",
         index_lines.join("\n")
     );
-    if !env.dry_run {
+    let index_path = saves_root.join(".index.tsv");
+    let index_changed = fs::read_to_string(&index_path)
+        .map(|current| current != index)
+        .unwrap_or(true);
+    if !env.dry_run && index_changed {
         let _ = fs::create_dir_all(&saves_root);
-        let _ = fs::write(saves_root.join(".index.tsv"), index);
+        let _ = fs::write(&index_path, index);
     }
 
     log.info(&format!(
         "Games processed: {games_done} | files created/updated: {total_files}"
     ));
 
-    let ok = git_backup(&env, &mut log);
+    let ok = if env.dry_run || total_files > 0 || index_changed {
+        git_backup(&env, &mut log)
+    } else {
+        log.info("Nothing changed; skipping git.");
+        true
+    };
     if ok {
         log.notify(
             "Backup de saves",
@@ -1099,6 +1145,13 @@ fn main() {
         );
     } else {
         log.notify("Backup de saves", "Backup failed — check the log.");
+    }
+    if ok {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = fs::write(&last_run_path, now.to_string());
     }
     log.info("=== Backup finished ===");
     if !ok {

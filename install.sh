@@ -20,6 +20,7 @@ CONFIG_DIR="$CONFIG_HOME/heroic-save-backup"
 UNIT_DIR="$CONFIG_HOME/systemd/user"
 SKIP_GITHUB="${SKIP_GITHUB:-0}"
 SKIP_TIMER="${SKIP_TIMER:-0}"
+MIN_INTERVAL="${GAME_SAVES_MIN_INTERVAL:-60}"
 HEROIC_DIR="${HEROIC_DIR:-}"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -148,7 +149,7 @@ After=network-online.target
 Type=oneshot
 Environment=GAME_SAVES_REPO=$REPO
 Environment=GAME_SAVES_MACHINE=$MACHINE
-ExecStart=$BIN --quiet
+ExecStart=$BIN --quiet --min-interval $MIN_INTERVAL
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=15min
