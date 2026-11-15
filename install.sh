@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 REPO="${GAME_SAVES_REPO:-$HOME/heroic-save-backup}"
 BIN="${GAME_SAVES_BIN:-$HOME/.local/bin/heroic-save-backup}"
-HOOK_BIN="${GAME_SAVES_HOOK:-$HOME/.local/bin/heroic-save-backup-hook}"
+HOOK_BIN="${GAME_SAVES_HOOK:-}"
 MACHINE="${GAME_SAVES_MACHINE:-$(hostname 2>/dev/null || echo linux)}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 CONFIG_DIR="$CONFIG_HOME/heroic-save-backup"
@@ -75,11 +75,18 @@ if [[ -z "$HEROIC_DIR" ]]; then
   HEROIC_DIR="$(detect_heroic || true)"
 fi
 
+if [[ -z "$HOOK_BIN" && -n "$HEROIC_DIR" ]]; then
+  HOOK_BIN="$HEROIC_DIR/heroic-save-backup-hook.sh"
+fi
+TRIGGER_FILE="${HEROIC_DIR:+$HEROIC_DIR/.heroic-save-backup-trigger}"
+
 info "Building heroic-save-backup (Rust)"
 cd "$SCRIPT_DIR"
 cargo build --release
 install -Dm755 "$SCRIPT_DIR/target/release/heroic-save-backup" "$BIN"
-install -Dm755 "$SCRIPT_DIR/heroic-hook.sh" "$HOOK_BIN"
+if [[ -n "$HOOK_BIN" ]]; then
+  install -Dm755 "$SCRIPT_DIR/heroic-hook.sh" "$HOOK_BIN"
+fi
 info "Installed $BIN"
 
 mkdir -p "$CONFIG_DIR"
@@ -165,7 +172,26 @@ EOF
   info "Timer state: $(systemctl --user is-active heroic-save-backup.timer)"
 fi
 
-if [[ -n "$HEROIC_DIR" && -d "$HEROIC_DIR" ]]; then
+if [[ "$SKIP_TIMER" != "1" && -n "$TRIGGER_FILE" ]]; then
+  info "Installing the after-game systemd path unit"
+  mkdir -p "$UNIT_DIR"
+  : > "$TRIGGER_FILE"
+  cat > "$UNIT_DIR/heroic-save-backup.path" <<EOF
+[Unit]
+Description=Watch Heroic's after-game trigger
+
+[Path]
+PathChanged=$TRIGGER_FILE
+
+[Install]
+WantedBy=default.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable --now heroic-save-backup.path
+  info "Path unit state: $(systemctl --user is-active heroic-save-backup.path)"
+fi
+
+if [[ -n "$HEROIC_DIR" && -d "$HEROIC_DIR" && -n "$HOOK_BIN" ]]; then
   info "Wiring Heroic's after-game hook"
   if pgrep -f "heroic" >/dev/null 2>&1; then
     warn "Heroic seems to be running. Close it and run this script again to apply the hook."
@@ -214,7 +240,7 @@ info "Done!"
 echo "  Data repo:  $REPO"
 echo "  Machine:    $MACHINE"
 echo "  Binary:     $BIN"
-echo "  Hook:       $HOOK_BIN"
+echo "  Hook:       ${HOOK_BIN:-not installed}"
 echo "  Log:        ${XDG_STATE_HOME:-$HOME/.local/state}/heroic-save-backup/backup.log"
 echo "  Timer:      systemctl --user list-timers heroic-save-backup.timer"
 echo "  Run now:    $BIN"

@@ -28,8 +28,11 @@ What was exercised:
   sideload libraries; Wine/Proton prefixes; native Linux save paths; extra
   prefixes in `~/Games`; `saveFolder` overrides; `extra_paths.tsv`; repeated
   runs (idempotency) and excluded files.
-- Real-machine smoke test: dry-run and live runs against Heroic Flatpak,
-  including a systemd timer and the after-game hook.
+- Real-machine smoke test: dry-run and live runs against Heroic Flatpak
+  `v2.22.4`, the daily systemd timer, and the after-game trigger executed
+  **inside the Flatpak sandbox** (Heroic's sandbox cannot run host processes,
+  so the hook writes a trigger file; a systemd user path unit on the host
+  starts the backup).
 
 > Other distributions should work (it only uses `git`, the filesystem and
 > systemd user units), but they were not tested by the author. Native
@@ -102,13 +105,16 @@ cd heroic-launcher-game-saves
 
 1. Build with `cargo build --release` and install
    `~/.local/bin/heroic-save-backup`.
-2. Install the Heroic hook as `~/.local/bin/heroic-save-backup-hook`.
+2. Install the Heroic hook inside Heroic's config directory
+   (`heroic-save-backup-hook.sh`). It only touches a trigger file, because the
+   Flatpak sandbox cannot launch host processes.
 3. Create the data repository (`--repo`, default `~/heroic-save-backup`),
    create a **private** GitHub repo with `gh` and push the first commit
    (unless a remote already exists).
 4. Save the repo path and machine name to
    `~/.config/heroic-save-backup/{repo,machine}`.
-5. Enable the daily systemd user timer (22:00 + up to 5 minutes of jitter).
+5. Enable the daily systemd user timer (22:00 + up to 5 minutes of jitter)
+   and the `heroic-save-backup.path` unit that watches the trigger file.
 6. Point Heroic's `afterLaunchScriptPath` at the hook.
 
 Options:
@@ -242,7 +248,9 @@ The exact prefix for each game is listed in
 - **Wrong prefix** — check `GamesConfig/<app>.json`; the tool uses its
   `winePrefix`, falling back to Heroic's default prefix directory.
 - **Hook does nothing** — close and reopen Heroic, or rerun `./install.sh`
-  while Heroic is closed, and check the log.
+  while Heroic is closed. Check `systemctl --user status heroic-save-backup.path`
+  and the log. The hook only writes Heroic's trigger file; the host starts the
+  backup through systemd.
 - **Push fails** — the commit stays local. Fix credentials and run
   `git -C <repo> push origin HEAD`.
 - **Two machines** — make sure each one uses a different `--machine` name.
@@ -250,11 +258,14 @@ The exact prefix for each game is listed in
 ## Uninstall
 
 ```bash
-systemctl --user disable --now heroic-save-backup.timer
-rm -f ~/.config/systemd/user/heroic-save-backup.{service,timer}
+systemctl --user disable --now heroic-save-backup.timer heroic-save-backup.path
+rm -f ~/.config/systemd/user/heroic-save-backup.{service,timer,path}
 systemctl --user daemon-reload
-rm -f ~/.local/bin/heroic-save-backup ~/.local/bin/heroic-save-backup-hook
+rm -f ~/.local/bin/heroic-save-backup
 rm -rf ~/.config/heroic-save-backup
+# remove the hook and trigger from Heroic's config directory:
+rm -f ~/.var/app/com.heroicgameslauncher.hgl/config/heroic/heroic-save-backup-hook.sh \
+      ~/.var/app/com.heroicgameslauncher.hgl/config/heroic/.heroic-save-backup-trigger
 ```
 
 Remove the `afterLaunchScriptPath` entries from Heroic's config (or restore
